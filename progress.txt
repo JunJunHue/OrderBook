@@ -1,0 +1,152 @@
+QuantForge — Test Progress Log
+==============================
+Last updated: 2026-03-18
+Build: clang++ -std=c++17 -O2 | ./build/orderbook_tests
+
+Results: 30 passed, 0 failed
+--------------------------------
+
+PHASE 1 — C++ Core Engine
+--------------------------
+TC-01  [PASS] limit_basic_match
+       Two matching limit orders produce exactly one fill at the correct price and quantity.
+       Both sides of the book are empty after the fill.
+
+TC-02  [PASS] price_priority
+       Best (lowest) ask is matched first when a buy order crosses the spread.
+       The more expensive ask remains resting in the book.
+
+TC-03  [PASS] time_priority
+       At the same price level, the earlier-submitted order fills first (FIFO).
+       The later order remains resting after the fill.
+
+TC-04  [PASS] market_order_buy
+       Market buy fills immediately at the best ask price.
+       Remaining ask quantity is reduced correctly.
+
+TC-05  [PASS] market_order_sell
+       Market sell fills immediately at the best bid price.
+       Remaining bid quantity is reduced correctly.
+
+TC-06  [PASS] market_order_multi_level
+       Market buy of 250 sweeps through three ask levels (100 + 100 + 50),
+       leaving 50 shares at the third level.
+
+TC-07  [PASS] cancel_order
+       Cancelled ask is removed from the book; a subsequent matching bid
+       produces no fill.
+
+TC-08  [PASS] cancel_nonexistent
+       cancelOrder() returns false for an unknown order ID without crashing.
+
+TC-09  [PASS] stop_order_no_trigger
+       A buy stop order with stop_price=95 does not trigger when the last
+       trade price is 90 (below the threshold).
+
+TC-10  [PASS] stop_order_trigger
+       A buy stop order at stop_price=100 triggers when a trade executes at
+       100, converting to a market buy that produces additional fills.
+
+TC-11  [PASS] stop_sell_trigger
+       A sell stop order at stop_price=100 triggers when trade_price <= 100,
+       converting to a market sell that produces additional fills.
+
+TC-12  [PASS] iceberg_visible_qty
+       An iceberg order with total=1000 and visible=100 shows only 100 shares
+       in the order book depth.
+
+TC-13  [PASS] iceberg_refill
+       After each 100-share visible slice is consumed, the next slice of 100
+       is automatically loaded. Three sequential market buys exhaust the full
+       300-share iceberg, leaving the book empty.
+
+TC-14  [PASS] iceberg_time_priority
+       After a visible slice fills, the replenished iceberg slice moves to the
+       BACK of the queue (loses time priority), so a plain resting order at the
+       same price fills before the refilled iceberg slice.
+
+TC-15  [PASS] partial_fill
+       A 500-share ask partially matched against a 200-share bid leaves 300
+       shares resting on the ask side; the bid is fully consumed.
+
+TC-16  [PASS] spread
+       getSpread() returns ask - bid = 2.0 for bid@99 and ask@101.
+
+TC-17  [PASS] depth_query
+       getBidDepth(3) returns three bid levels in descending price order.
+       getAskDepth(3) returns ask levels in ascending price order.
+
+PHASE 1 — PoolAllocator
+------------------------
+TC-18  [PASS] pool_alloc_basic
+       Allocating one Order from a 16-slot pool reduces available() to 15;
+       deallocating restores available() to 16.
+
+TC-19  [PASS] pool_overflow_fallback
+       When the slab is exhausted, allocate() falls back to the heap without
+       crashing. Heap pointers are correctly freed via operator delete, not
+       returned to the slab.
+
+TC-20  [PASS] pool_reuse
+       After freeing a slot, the next allocation returns the same address
+       (LIFO free-list behaviour — optimal cache locality).
+
+PHASE 1 — OrderBook (tick-feed tracker)
+-----------------------------------------
+TC-21  [PASS] orderbook_tick_tracking
+       Processing ORDER_ADDED ticks updates best bid, best ask, and spread
+       correctly.
+
+TC-22  [PASS] orderbook_remove
+       An ORDER_REMOVED tick clears the corresponding bid from the book.
+
+TC-23  [PASS] orderbook_aggregate
+       Two ORDER_ADDED ticks at the same price level aggregate total_quantity
+       correctly (300 + 200 = 500).
+
+PHASE 2 — Execution Strategies
+--------------------------------
+TC-24  [PASS] twap_basic
+       TWAPStrategy.getNextDecision() returns a non-zero BID quantity
+       when elapsed_time puts us at interval 2 of 10.
+
+TC-25  [PASS] vwap_weights
+       VWAPStrategy with a uniform 10-bucket profile returns a positive
+       quantity at 50% elapsed time, within the total order size.
+
+TC-26  [PASS] almgren_chriss
+       AlmgrenChrissStrategy initialises without crash and returns a quantity
+       <= total_quantity at t=0.
+
+PHASE 5 — Backtester
+---------------------
+TC-27  [PASS] backtester_runs
+       Backtester.runBacktest() completes a 200-tick synthetic replay with
+       a TWAP strategy; total_executed does not exceed the requested quantity.
+
+TC-28  [PASS] backtester_shortfall
+       Implementation shortfall field is a finite number when fills are
+       produced against asks above the arrival price.
+
+PHASE 1 — MarketMicrostructureAnalyzer
+----------------------------------------
+TC-29  [PASS] analyzer_spread_mean
+       After 50 ticks with a constant bid@99 / ask@101 spread, spread_mean
+       converges to approximately 2.0 (within ±0.5).
+
+TC-30  [PASS] analyzer_imbalance
+       After 20 bid-only ORDER_ADDED ticks, bid_ask_imbalance > 0.5,
+       correctly reflecting one-sided buy pressure.
+
+--------------------------------
+NEW FILES ADDED THIS SESSION:
+  include/order.h             — added STOP, ICEBERG to OrderType; stop_price,
+                                visible_quantity, hidden_quantity fields on Order
+  include/pool_allocator.h    — template slab pool allocator (O(1) alloc/free)
+  include/matching_engine.h   — MatchingEngine class declaration
+  src/matching_engine.cpp     — price-time priority matching engine:
+                                LIMIT, MARKET, STOP, ICEBERG order types
+  tests/test_main.cpp         — 30-test suite, hand-rolled harness (no external deps)
+  CMakeLists.txt              — updated: LIB_SOURCES shared, orderbook_tests target added
+  execution_strategy.h        — added getTotalQuantity() public getter
+  backtester.cpp              — fixed protected member access via getter
