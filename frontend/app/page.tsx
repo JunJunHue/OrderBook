@@ -36,6 +36,51 @@ const BASE: Record<string, number> = {
 };
 const TICKERS = Object.keys(BASE);
 
+// AI infrastructure demand base scores (thesis-weighted)
+const AI_DEMAND_BASE: Record<string, number> = {
+  NVDA: 91, // GPU compute monopoly
+  CEG: 79,  // nuclear power for AI data centers
+  AMD: 72,
+  MSFT: 84, // Azure AI, OpenAI partnership
+  META: 75, // LLaMA, AI infra buildout
+  GOOGL: 80, // TPUs, Gemini
+};
+
+// ─── Signal Helpers ────────────────────────────────────────────────────────────
+
+interface Signals {
+  lstmBull: boolean;
+  lstmConf: number;
+  momentum: number;  // 0–1
+  meanRevZ: number;
+  aiDemand: number;  // 0–100
+  sentiment: number; // 0–100
+}
+
+function computeSignals(sym: string, price: number, hist: number[]): Signals {
+  const recent = hist.slice(-20);
+  const mean20 = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const variance = recent.reduce((a, b) => a + (b - mean20) ** 2, 0) / recent.length;
+  const std = Math.sqrt(variance) || 1;
+  const meanRevZ = parseFloat(((price - mean20) / std).toFixed(2));
+
+  const last5 = hist.slice(-5);
+  const upMoves = last5.filter((v, i) => i > 0 && v > last5[i - 1]).length;
+  const momentum = parseFloat((upMoves / 4).toFixed(2));
+
+  const lstmBull = momentum >= 0.5;
+  const lstmConf = Math.min(95, Math.max(50, Math.round(55 + Math.abs(momentum - 0.5) * 2 * 40)));
+
+  const base = AI_DEMAND_BASE[sym] ?? 75;
+  const sentimentNoise = Math.round((Math.random() - 0.5) * 6);
+  const sentiment = Math.min(99, Math.max(50, base - 5 + sentimentNoise));
+  const aiDemand = Math.min(99, Math.max(40, Math.round(
+    base * 0.45 + lstmConf * 0.30 + sentiment * 0.15 + (meanRevZ < 0 ? 8 : -4) + (Math.random() - 0.5) * 4
+  )));
+
+  return { lstmBull, lstmConf, momentum, meanRevZ, aiDemand, sentiment };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const f2 = (n: number) => n.toFixed(2);
@@ -85,27 +130,39 @@ export default function Terminal() {
   const [autoOn, setAutoOn] = useState(false);
   const [fillCount, setFillCount] = useState(0);
   const [fps, setFps] = useState(0);
+  const [signals, setSignals] = useState<Signals>(() =>
+    computeSignals('NVDA', BASE['NVDA'], Array(80).fill(BASE['NVDA']))
+  );
 
   const priceRef = useRef(BASE['NVDA']);
   const symRef = useRef('NVDA');
   const fpsRef = useRef(0);
+  const histRef = useRef<number[]>(Array(80).fill(BASE['NVDA']));
 
   useEffect(() => {
     symRef.current = sym;
     priceRef.current = BASE[sym];
+    const freshHist = Array(80).fill(BASE[sym]);
+    histRef.current = freshHist;
     setPrice(BASE[sym]);
-    setHist(Array(80).fill(BASE[sym]));
+    setHist(freshHist);
     const book = makeBook(BASE[sym]);
     setBids(book.bids);
     setAsks(book.asks);
+    setSignals(computeSignals(sym, BASE[sym], freshHist));
   }, [sym]);
 
   useEffect(() => {
     const sim = setInterval(() => {
       const p = nextPrice(priceRef.current, BASE[symRef.current]);
       priceRef.current = p;
+      const newHist = [...histRef.current.slice(1), p];
+      histRef.current = newHist;
       setPrice(p);
-      setHist(h => [...h.slice(1), p]);
+      setHist(newHist);
+      if (Math.random() < 0.12) {
+        setSignals(computeSignals(symRef.current, p, newHist));
+      }
       const book = makeBook(p);
       setBids(book.bids);
       setAsks(book.asks);
@@ -395,7 +452,7 @@ export default function Terminal() {
         </main>
 
         {/* RIGHT — Positions + Metrics */}
-        <aside className="w-[216px] border-l border-[#1e2832] flex flex-col shrink-0">
+        <aside className="w-[232px] border-l border-[#1e2832] flex flex-col shrink-0">
           <div className="px-3 py-1.5 text-[10px] text-[#8b949e] uppercase tracking-widest border-b border-[#1e2832] shrink-0">
             Positions
           </div>
@@ -446,6 +503,84 @@ export default function Terminal() {
                 <span style={{ color: color ?? '#e6edf3' }}>{value}</span>
               </div>
             ))}
+          </div>
+
+          {/* AI Demand Signals */}
+          <div className="border-t border-[#1e2832] shrink-0">
+            <div className="px-3 py-1.5 flex items-center justify-between border-b border-[#1e2832]">
+              <span className="text-[10px] text-[#8b949e] uppercase tracking-widest">AI Signals</span>
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${signals.lstmBull ? 'bg-[#00d97e22] text-[#00d97e]' : 'bg-[#ff335522] text-[#ff3355]'}`}>
+                {signals.lstmBull ? '▲ BULL' : '▼ BEAR'}
+              </span>
+            </div>
+
+            {/* LSTM */}
+            <div className="px-3 py-1.5 border-b border-[#1e283244]">
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] text-[#8b949e]">LSTM Conf</span>
+                <span className={`text-[10px] font-bold ${signals.lstmBull ? 'text-[#00d97e]' : 'text-[#ff3355]'}`}>
+                  {signals.lstmConf}%
+                </span>
+              </div>
+              <div className="h-1 bg-[#1e2832] rounded-full">
+                <div
+                  className={`h-1 rounded-full transition-all duration-500 ${signals.lstmBull ? 'bg-[#00d97e]' : 'bg-[#ff3355]'}`}
+                  style={{ width: `${signals.lstmConf}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Momentum */}
+            <div className="px-3 py-1.5 border-b border-[#1e283244]">
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] text-[#8b949e]">Momentum</span>
+                <span className="text-[10px] text-[#e6edf3]">{(signals.momentum * 100).toFixed(0)}%</span>
+              </div>
+              <div className="flex gap-0.5">
+                {[0.2, 0.4, 0.6, 0.8, 1.0].map(t => (
+                  <div
+                    key={t}
+                    className={`flex-1 h-1.5 rounded-sm ${signals.momentum >= t ? 'bg-[#00c8ff]' : 'bg-[#1e2832]'}`}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Mean Reversion */}
+            <div className="px-3 py-1.5 flex justify-between border-b border-[#1e283244]">
+              <span className="text-[10px] text-[#8b949e]">Mean Rev (σ)</span>
+              <span className={`text-[10px] font-mono ${Math.abs(signals.meanRevZ) > 1.5 ? 'text-[#f5a623]' : 'text-[#e6edf3]'}`}>
+                {signals.meanRevZ > 0 ? '+' : ''}{signals.meanRevZ.toFixed(2)}
+              </span>
+            </div>
+
+            {/* AI Demand Score */}
+            <div className="px-3 py-1.5 border-b border-[#1e283244]">
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] text-[#8b949e]">AI Demand</span>
+                <span className="text-[10px] text-[#00c8ff] font-bold">{signals.aiDemand}</span>
+              </div>
+              <div className="h-1 bg-[#1e2832] rounded-full">
+                <div
+                  className="h-1 rounded-full bg-[#00c8ff] transition-all duration-700"
+                  style={{ width: `${signals.aiDemand}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Sentiment */}
+            <div className="px-3 py-1.5">
+              <div className="flex justify-between mb-1">
+                <span className="text-[10px] text-[#8b949e]">Sentiment</span>
+                <span className="text-[10px] text-[#f5a623] font-bold">{signals.sentiment}</span>
+              </div>
+              <div className="h-1 bg-[#1e2832] rounded-full">
+                <div
+                  className="h-1 rounded-full bg-[#f5a623] transition-all duration-700"
+                  style={{ width: `${signals.sentiment}%` }}
+                />
+              </div>
+            </div>
           </div>
         </aside>
       </div>
